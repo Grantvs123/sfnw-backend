@@ -82,7 +82,7 @@ async def recording_complete(
 # ============================================================
 # INBOUND SMS HANDLER (optional)
 # ============================================================
-@app.post("/sms/inbound")
+@app.post("/incoming")
 async def sms_inbound(request: Request):
     """
     Handles incoming SMS messages.
@@ -95,3 +95,4 @@ async def sms_inbound(request: Request):
     mr.message(f"Maxi here! You said: {body}")
 
     return Response(content=str(mr), media_type="text/xml")
+
