@@ -4,20 +4,15 @@ import os
 
 app = FastAPI()
 
-# Twilio requires XML for its responses
-def twiml(content: str):
-    return PlainTextResponse(content, media_type="application/xml")
+def twiml(xml: str):
+    return PlainTextResponse(xml, media_type="application/xml")
 
-# =========================
-#   HEALTH CHECK
-# =========================
+# ------- HEALTH CHECK -------
 @app.get("/status")
 def status():
     return {"status": "running", "message": "Maxi backend is online."}
 
-# =========================
-#   VOICE HANDLER (CALLS)
-# =========================
+# ------- VOICE INBOUND -------
 @app.post("/voice/inbound")
 async def voice_inbound():
     xml = """
@@ -31,13 +26,10 @@ async def voice_inbound():
     """
     return twiml(xml)
 
-# =========================
-#  RECORDING CALLBACK
-# =========================
+# ------- RECORDING CALLBACK -------
 @app.post("/voice/recorded")
 async def voice_recorded(RecordingUrl: str = Form(...)):
     print("Recording received:", RecordingUrl)
-
     xml = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
@@ -46,9 +38,7 @@ async def voice_recorded(RecordingUrl: str = Form(...)):
     """
     return twiml(xml)
 
-# =========================
-#   SMS HANDLER
-# =========================
+# ------- SMS HANDLER -------
 @app.post("/sms")
 async def sms(MessageSid: str = Form(...), Body: str = Form("")):
     xml = f"""
