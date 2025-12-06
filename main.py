@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
-import os
 
 app = FastAPI()
 
@@ -11,6 +10,11 @@ def twiml(xml: str):
 @app.get("/status")
 def status():
     return {"status": "running", "message": "Maxi backend is online."}
+
+# ------- VERSION CHECK -------
+@app.get("/version")
+def version():
+    return {"version": "3.14"}
 
 # ------- VOICE INBOUND -------
 @app.post("/voice/inbound")
