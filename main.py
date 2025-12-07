@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, Response
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -23,6 +23,8 @@ logger = logging.getLogger("maxi-backend")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
+
+ELEVENLABS_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID", "default_agent_id")
 
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -122,51 +124,75 @@ def version():
 
 # --------------------------------------------------------------------
 # VOICE: INBOUND CALL
-# Twilio: “A call comes in”  ->  POST https://sfnw-backend-production.up.railway.app/voice/inbound
+# Twilio calls this endpoint when an incoming call is received.
+# This endpoint connects the call to ElevenLabs AI agent.
 # --------------------------------------------------------------------
-@app.post("/voice/inbound")
+@app.api_route("/voice/inbound", methods=["GET", "POST"])
 async def voice_inbound(request: Request):
+    """
+    Handle incoming Twilio calls and connect them to ElevenLabs AI agent.
+    Accepts both GET and POST requests as Twilio can use either method.
+    """
+    # Parse form data (Twilio sends call parameters as form data)
     form = await request.form()
     from_number = form.get("From", "Unknown")
-    logger.info("Inbound call from %s", from_number)
-
-    # Simple greeting + record
-    xml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice">Hello, this is Maxi Bandwidth. Please leave a message after the beep. When you are done, just hang up.</Say>
-    <Record maxLength="60" action="/voice/recording-complete" method="POST" playBeep="true" />
-</Response>"""
-    return twiml(xml)
-
-
-# --------------------------------------------------------------------
-# VOICE: RECORDING CALLBACK
-# Twilio: “Recording Status Callback” or Record action -> POST /voice/recording-complete
-# --------------------------------------------------------------------
-@app.post("/voice/recording-complete")
-async def voice_recording_complete(
-    RecordingUrl: str = Form(None),
-    RecordingDuration: str = Form(None),
-    From: str = Form(None),
-    To: str = Form(None),
-    CallSid: str = Form(None)
-):
-    """
-    Handle recording completion callback from Twilio.
-    Logs the recording details and optionally creates a calendar event.
-    """
-    logger.info("Recording complete from %s, CallSid: %s", From, CallSid)
-    logger.info("Recording URL: %s, Duration: %s seconds", RecordingUrl, RecordingDuration)
+    to_number = form.get("To", "Unknown")
+    call_sid = form.get("CallSid", "Unknown")
     
-    # Create a calendar event for the voicemail
-    if RecordingUrl:
-        summary = f"Voicemail from {From}"
-        description = f"Call SID: {CallSid}\nDuration: {RecordingDuration}s\nRecording: {RecordingUrl}"
+    logger.info("Inbound call - From: %s, To: %s, CallSid: %s", from_number, to_number, call_sid)
+    
+    # TwiML response that connects the call to ElevenLabs
+    # Using <Connect> with <Stream> to send audio to ElevenLabs
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://api.elevenlabs.io/v1/convai/conversation?agent_id={ELEVENLABS_AGENT_ID}">
+            <Parameter name="call_sid" value="{call_sid}" />
+            <Parameter name="from" value="{from_number}" />
+        </Stream>
+    </Connect>
+</Response>"""
+    
+    return Response(content=xml, media_type="text/xml")
+
+
+# --------------------------------------------------------------------
+# WEBHOOK: ELEVENLABS CALLBACK
+# ElevenLabs calls this endpoint after the conversation to send appointment data
+# --------------------------------------------------------------------
+@app.post("/webhook")
+async def webhook(request: Request):
+    """
+    Handle webhook callbacks from ElevenLabs with appointment data.
+    Creates a calendar event based on the appointment information.
+    """
+    try:
+        data = await request.json()
+        logger.info("Received webhook from ElevenLabs: %s", json.dumps(data, indent=2))
+        
+        # Extract appointment details from the webhook payload
+        # Adjust these fields based on actual ElevenLabs webhook structure
+        summary = data.get("summary", "Appointment from MAXI")
+        description = data.get("description", "")
+        
+        # Create calendar event
         create_calendar_event(summary, description)
-    
-    # Return simple TwiML response
-    xml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice">Thank you for your message. We will get back to you soon. Goodbye.</Say>
-</Response>"""
-    return twiml(xml)
+        
+        return JSONResponse(
+            content={"status": "success", "message": "Appointment processed"},
+            status_code=200
+        )
+    except Exception as e:
+        logger.error("Error processing webhook: %s", e)
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500
+        )
+
+
+# --------------------------------------------------------------------
+# HEALTH CHECK
+# --------------------------------------------------------------------
+@app.get("/health")
+def health():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
