@@ -140,7 +140,36 @@ ENVIRONMENT=production
 
 # Port (Railway sets this automatically)
 PORT=8000
+
+# Timezone for calendar events (IANA timezone format)
+# Default: America/New_York
+# Examples: America/Los_Angeles, America/Chicago, Europe/London, Asia/Tokyo
+# See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+TIMEZONE=America/New_York
+
+# Webhook authentication secret (REQUIRED for production security)
+# Generate a strong random secret: openssl rand -hex 32
+# This secret must be provided by webhook callers via X-Webhook-Secret header
+# or ?secret= query parameter
+# Leave empty to disable webhook authentication (not recommended for production)
+WEBHOOK_SECRET=your_secure_webhook_secret_here
+
+# ElevenLabs Agent ID for voice integration
+# Required for /voice/inbound endpoint to connect Twilio calls to ElevenLabs AI
+# Find in ElevenLabs dashboard: https://elevenlabs.io/
+ELEVENLABS_AGENT_ID=your_elevenlabs_agent_id_here
 ```
+
+**Important Security Notes**:
+- **WEBHOOK_SECRET**: Generate a strong random secret for production using:
+  ```bash
+  openssl rand -hex 32
+  ```
+  This prevents unauthorized access to your webhook endpoint.
+
+- **TIMEZONE**: Configure this to match your business timezone for accurate appointment scheduling.
+
+- **ELEVENLABS_AGENT_ID**: Required if you're using the `/voice/inbound` endpoint to connect Twilio phone calls to ElevenLabs AI agent.
 
 ## 🚂 Deploy to Railway
 
@@ -185,6 +214,9 @@ PORT=8000
      SMTP_SERVER
      SMTP_PORT
      ENVIRONMENT
+     TIMEZONE
+     WEBHOOK_SECRET
+     ELEVENLABS_AGENT_ID
      ```
 
 4. **Deploy**:
@@ -204,8 +236,22 @@ PORT=8000
 # Test health endpoint
 curl https://your-app.railway.app/health
 
-# Test webhook with sample data
+# Test webhook with sample data (with authentication)
+# Replace YOUR_WEBHOOK_SECRET with your actual secret
 curl -X POST https://your-app.railway.app/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: YOUR_WEBHOOK_SECRET" \
+  -d '{
+    "caller": "+1234567890",
+    "customer_name": "John Doe",
+    "summary": "Customer wants to schedule a callback",
+    "callback_time": "2025-12-08T15:00:00Z",
+    "email": "john@example.com",
+    "intent": "appointment"
+  }'
+
+# Alternative: Pass secret as query parameter
+curl -X POST "https://your-app.railway.app/webhook?secret=YOUR_WEBHOOK_SECRET" \
   -H "Content-Type: application/json" \
   -d '{
     "caller": "+1234567890",
@@ -217,9 +263,13 @@ curl -X POST https://your-app.railway.app/webhook \
   }'
 ```
 
-## 🎙️ Configure ElevenLabs Webhook
+## 🎙️ Configure ElevenLabs Integration
 
-### In ElevenLabs Voice Agent Dashboard:
+### Option 1: Webhook for Post-Call Processing
+
+This endpoint receives data after a call completes and creates appointments.
+
+#### In ElevenLabs Voice Agent Dashboard:
 
 1. **Navigate to Your Voice Agent**:
    - Log in to [ElevenLabs](https://elevenlabs.io/)
@@ -228,10 +278,13 @@ curl -X POST https://your-app.railway.app/webhook \
 
 2. **Configure Webhook URL**:
    - Find "Webhook" or "Callback URL" settings
-   - Enter your Railway webhook URL:
+   - Enter your Railway webhook URL with authentication:
      ```
-     https://your-app.railway.app/webhook
+     https://your-app.railway.app/webhook?secret=YOUR_WEBHOOK_SECRET
      ```
+     Or configure the secret in a custom header:
+     - Header name: `X-Webhook-Secret`
+     - Header value: `YOUR_WEBHOOK_SECRET`
    - Set method to `POST`
    - Set content type to `application/json`
 
@@ -254,6 +307,37 @@ curl -X POST https://your-app.railway.app/webhook \
    - Check Railway logs to verify webhook was received
    - Verify calendar event was created
    - Check SMS and email were sent
+
+### Option 2: Voice Inbound Endpoint for Real-Time Call Handling
+
+This endpoint connects incoming Twilio phone calls directly to your ElevenLabs AI agent in real-time.
+
+#### Configure Twilio Phone Number:
+
+1. **Log in to [Twilio Console](https://console.twilio.com/)**
+
+2. **Select Your Phone Number**:
+   - Go to Phone Numbers → Manage → Active numbers
+   - Click on your phone number
+
+3. **Configure Voice Webhooks**:
+   - Scroll to "Voice Configuration"
+   - Under "A CALL COMES IN":
+     - Select "Webhook"
+     - Enter your endpoint URL:
+       ```
+       https://your-app.railway.app/voice/inbound
+       ```
+     - Select HTTP method: `POST` (or `GET`, both are supported)
+   - Click "Save"
+
+4. **Test the Integration**:
+   - Call your Twilio phone number
+   - You should be connected to your ElevenLabs AI agent
+   - The conversation will be processed in real-time
+   - After the call, the webhook (Option 1) will receive the appointment data
+
+**Note**: For this to work, you must have `ELEVENLABS_AGENT_ID` configured in your environment variables.
 
 ## 🧪 Testing
 
@@ -492,9 +576,88 @@ Processes ElevenLabs voice agent webhooks.
 }
 ```
 
+### POST/GET /voice/inbound
+
+Connects incoming Twilio phone calls to ElevenLabs AI agent in real-time.
+
+**Method**: `POST` or `GET` (Twilio compatible)
+
+**Parameters** (sent by Twilio as form data):
+- `From`: Caller's phone number
+- `To`: Recipient phone number
+- `CallSid`: Twilio call identifier
+
+**Response**: TwiML XML that connects the call to ElevenLabs
+
+**Example Response**:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://api.elevenlabs.io/v1/convai/conversation?agent_id=YOUR_AGENT_ID">
+            <Parameter name="call_sid" value="CAxxxxx" />
+            <Parameter name="from" value="+1234567890" />
+        </Stream>
+    </Connect>
+</Response>
+```
+
+### POST /webhook
+
+Processes appointment data from ElevenLabs voice agent after a call completes.
+
+**Method**: `POST`
+
+**Headers** (required if WEBHOOK_SECRET is configured):
+- `X-Webhook-Secret`: Your webhook secret token
+  
+**Alternative**: Pass secret as query parameter: `/webhook?secret=YOUR_SECRET`
+
+**Request Body**:
+```json
+{
+  "caller": "+1234567890",
+  "customer_name": "John Doe",
+  "summary": "Customer wants to schedule a callback",
+  "transcript": "Full conversation transcript...",
+  "intent": "appointment",
+  "callback_time": "2025-12-08T15:00:00Z",
+  "email": "john@example.com"
+}
+```
+
+**Response** (Success):
+```json
+{
+  "status": "success",
+  "message": "Appointment processed successfully",
+  "data": {
+    "calendar_created": true,
+    "sms_sent": true,
+    "email_sent": true,
+    "calendar_event_id": "event_id_here",
+    "calendar_link": "https://calendar.google.com/..."
+  },
+  "customer": {
+    "name": "John Doe",
+    "phone": "+1234567890",
+    "email": "john@example.com"
+  },
+  "appointment_time": "2025-12-08T15:00:00Z"
+}
+```
+
+**Response** (Authentication Failed):
+```json
+{
+  "detail": "Invalid webhook secret"
+}
+```
+Status code: `403 Forbidden`
+
 ### GET /health
 
-Health check endpoint.
+Health check endpoint for monitoring service status.
 
 **Response**:
 ```json
@@ -524,16 +687,21 @@ For issues or questions:
 
 ## 🎯 Roadmap
 
+Completed features:
+- [x] Webhook signature verification (WEBHOOK_SECRET)
+- [x] Support for multiple timezones (TIMEZONE configuration)
+- [x] Real-time call handling (/voice/inbound endpoint)
+
 Potential future enhancements:
 
-- [ ] Webhook signature verification
 - [ ] Database integration for appointment tracking
-- [ ] Support for multiple timezones
 - [ ] Rescheduling/cancellation endpoints
 - [ ] WhatsApp integration
 - [ ] Advanced analytics dashboard
 - [ ] Multi-language support
 - [ ] Custom SMS/email templates
+- [ ] Rate limiting for webhook endpoint
+- [ ] Appointment reminder system
 
 ---
 
