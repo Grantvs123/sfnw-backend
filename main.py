@@ -149,4 +149,24 @@ async def voice_recording_complete(
     RecordingDuration: str = Form(None),
     From: str = Form(None),
     To: str = Form(None),
-    CallSid: str = Form(None),
+    CallSid: str = Form(None)
+):
+    """
+    Handle recording completion callback from Twilio.
+    Logs the recording details and optionally creates a calendar event.
+    """
+    logger.info("Recording complete from %s, CallSid: %s", From, CallSid)
+    logger.info("Recording URL: %s, Duration: %s seconds", RecordingUrl, RecordingDuration)
+    
+    # Create a calendar event for the voicemail
+    if RecordingUrl:
+        summary = f"Voicemail from {From}"
+        description = f"Call SID: {CallSid}\nDuration: {RecordingDuration}s\nRecording: {RecordingUrl}"
+        create_calendar_event(summary, description)
+    
+    # Return simple TwiML response
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">Thank you for your message. We will get back to you soon. Goodbye.</Say>
+</Response>"""
+    return twiml(xml)
