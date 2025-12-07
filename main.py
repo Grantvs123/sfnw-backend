@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr, Field, validator
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -33,6 +33,19 @@ app = FastAPI(
     description="Handles ElevenLabs voice agent webhooks and processes appointments",
     version="1.0.0"
 )
+
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+
+# Timezone configuration (default: America/New_York)
+TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
+
+# Webhook security - secret token for authentication
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+# ElevenLabs Agent ID for voice integration
+ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "default_agent_id")
 
 # ============================================================================
 # REQUEST MODEL WITH VALIDATION
@@ -150,11 +163,11 @@ def create_calendar_event(
             "description": "\n".join(description_parts),
             "start": {
                 "dateTime": start_time.isoformat(),
-                "timeZone": "America/New_York",  # Adjust as needed
+                "timeZone": TIMEZONE,
             },
             "end": {
                 "dateTime": end_time.isoformat(),
-                "timeZone": "America/New_York",
+                "timeZone": TIMEZONE,
             },
             "attendees": [],
             "reminders": {
@@ -494,20 +507,73 @@ async def health_check():
         "services": services_status,
     }
 
+@app.api_route("/voice/inbound", methods=["GET", "POST"])
+async def voice_inbound(request: Request):
+    """
+    Handle incoming Twilio calls and connect them to ElevenLabs AI agent.
+    Accepts both GET and POST requests as Twilio can use either method.
+    
+    This endpoint is called by Twilio when an inbound call is received.
+    It returns TwiML that connects the call to the ElevenLabs conversational AI agent.
+    """
+    # Parse form data (Twilio sends call parameters as form data)
+    form = await request.form()
+    from_number = form.get("From", "Unknown")
+    to_number = form.get("To", "Unknown")
+    call_sid = form.get("CallSid", "Unknown")
+    
+    logger.info(f"Inbound call - From: {from_number}, To: {to_number}, CallSid: {call_sid}")
+    
+    # TwiML response that connects the call to ElevenLabs
+    # Using <Connect> with <Stream> to send audio to ElevenLabs
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://api.elevenlabs.io/v1/convai/conversation?agent_id={ELEVENLABS_AGENT_ID}">
+            <Parameter name="call_sid" value="{call_sid}" />
+            <Parameter name="from" value="{from_number}" />
+        </Stream>
+    </Connect>
+</Response>"""
+    
+    return Response(content=xml, media_type="text/xml")
+
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     """
     Main webhook endpoint for ElevenLabs voice agent
     
     Processes incoming webhook payload and:
-    1. Validates the data
-    2. Creates Google Calendar event
-    3. Sends SMS confirmation
-    4. Sends email confirmation
+    1. Validates webhook authentication (if WEBHOOK_SECRET is configured)
+    2. Validates the data
+    3. Creates Google Calendar event
+    4. Sends SMS confirmation
+    5. Sends email confirmation
     
     Returns appropriate status codes to ElevenLabs
     """
     try:
+        # Webhook authentication - verify secret token if configured
+        if WEBHOOK_SECRET:
+            # Check for secret in header (X-Webhook-Secret) or query parameter
+            provided_secret = request.headers.get("X-Webhook-Secret") or request.query_params.get("secret")
+            
+            if not provided_secret:
+                logger.warning(f"Webhook authentication failed: No secret provided from {request.client.host}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Webhook authentication required. Provide secret via X-Webhook-Secret header or 'secret' query parameter."
+                )
+            
+            if provided_secret != WEBHOOK_SECRET:
+                logger.warning(f"Webhook authentication failed: Invalid secret from {request.client.host}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid webhook secret"
+                )
+            
+            logger.info(f"Webhook authentication successful from {request.client.host}")
+        
         # Parse and validate request body
         raw_data = await request.json()
         logger.info(f"Received webhook from {request.client.host}: {json.dumps(raw_data, indent=2)}")
