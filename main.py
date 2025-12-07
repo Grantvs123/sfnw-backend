@@ -1,22 +1,25 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
+import os
 
 app = FastAPI()
 
+# ============================================================
+# Helper to return TwiML with correct Content-Type
+# ============================================================
 def twiml(xml: str):
     return PlainTextResponse(xml, media_type="application/xml")
 
-# ------- HEALTH CHECK -------
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 @app.get("/status")
 def status():
     return {"status": "running", "message": "Maxi backend is online."}
 
-# ------- VERSION CHECK -------
-@app.get("/version")
-def version():
-    return {"version": "3.14"}
-
-# ------- VOICE INBOUND -------
+# ============================================================
+# VOICE — INBOUND CALL HANDLER
+# ============================================================
 @app.post("/voice/inbound")
 async def voice_inbound():
     xml = """
@@ -30,7 +33,9 @@ async def voice_inbound():
     """
     return twiml(xml)
 
-# ------- RECORDING CALLBACK -------
+# ============================================================
+# VOICE — RECORDING CALLBACK
+# ============================================================
 @app.post("/voice/recorded")
 async def voice_recorded(RecordingUrl: str = Form(...)):
     print("Recording received:", RecordingUrl)
@@ -42,13 +47,24 @@ async def voice_recorded(RecordingUrl: str = Form(...)):
     """
     return twiml(xml)
 
-# ------- SMS HANDLER -------
-@app.post("/sms")
-async def sms(MessageSid: str = Form(...), Body: str = Form("")):
+# ============================================================
+# SMS HANDLER
+# Twilio hits this when someone texts your number
+# ============================================================
+@app.post("/incoming")
+async def incoming_sms(Body: str = Form(...)):
+    reply = f"Maxi here! You said: {Body}"
     xml = f"""
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
-        <Message>Maxi here! You said: {Body}</Message>
+        <Message>{reply}</Message>
     </Response>
     """
     return twiml(xml)
+
+# ============================================================
+# VERSION CHECK
+# ============================================================
+@app.get("/version")
+def version():
+    return {"version": "3.14"}
